@@ -219,7 +219,8 @@ function App() {
     setTeams((prev) => prev.map((item) => (item.id === nextTeam.id ? nextTeam : item)));
   }
 
-  async function persistTeam(nextTeam = team) {
+  async function persistTeam(nextTeam?: Team) {
+    nextTeam ??= team ?? undefined;
     if (!nextTeam) return;
     setBusy(true);
     setAppError("");
@@ -260,12 +261,17 @@ function App() {
     }
   }
 
-  async function handleJoinTeam(code = joinCode) {
+  async function handleJoinTeam(code?: string) {
+    const codeToJoin = typeof code === "string" ? code : joinCode;
     if (!session?.user) return;
+    if (!codeToJoin.trim()) {
+      setAppError("Введите код команды");
+      return;
+    }
     setBusy(true);
     setAppError("");
     try {
-      await joinTeamByCode(session.user.id, code);
+      await joinTeamByCode(session.user.id, codeToJoin);
       setJoinCode("");
       await reloadWorkspace();
     } catch (error) {
@@ -467,7 +473,7 @@ function App() {
           busy={busy}
           joinCode={joinCode}
           setJoinCode={setJoinCode}
-          onJoin={handleJoinTeam}
+          onJoin={() => handleJoinTeam()}
           onCreate={handleCreateTeam}
         />
       </main>
@@ -541,7 +547,7 @@ function App() {
           team={team}
           joinCode={joinCode}
           setJoinCode={setJoinCode}
-          onJoin={handleJoinTeam}
+          onJoin={() => handleJoinTeam()}
           draftSections={draftSections}
           updateDraft={updateDraft}
           submitDraft={submitDraft}
@@ -671,7 +677,11 @@ function AuthScreen({
         });
         if (signUpError) throw signUpError;
         if (data.user && data.session) await ensureProfile(data.user, fullName);
-        setMessage("Регистрация создана. Если включено подтверждение почты, проверь письмо.");
+        setMessage(
+          data.session
+            ? "Аккаунт создан, вход выполнен."
+            : "Письмо подтверждения отправлено. Открой ссылку из письма, затем войди в приложение."
+        );
       } else {
         const { error: signInError } = await supabase.auth.signInWithPassword({ email, password });
         if (signInError) throw signInError;
@@ -846,7 +856,7 @@ function Onboarding({
             onChange={(event) => setJoinCode(event.target.value.toUpperCase())}
             placeholder="Например NOTE42"
           />
-          <button disabled={busy || !joinCode} onClick={onJoin}>
+          <button disabled={busy || !joinCode} onClick={() => onJoin()}>
             <ChevronRight size={18} />
           </button>
         </div>
@@ -951,7 +961,7 @@ function LeadWorkspace(props: LeadProps) {
             <RefreshCw size={16} />
           </button>
         </div>
-        <button onClick={persistTeam} disabled={busy}>
+        <button onClick={() => persistTeam()} disabled={busy}>
           <Save size={17} />
           Сохранить команду
         </button>
@@ -1168,7 +1178,7 @@ function MemberWorkspace(props: MemberProps) {
             onChange={(event) => setJoinCode(event.target.value.toUpperCase())}
             placeholder="Например NOTE42"
           />
-          <button disabled={!joinCode || busy} onClick={onJoin}>
+          <button disabled={!joinCode || busy} onClick={() => onJoin()}>
             <ChevronRight size={18} />
           </button>
         </div>

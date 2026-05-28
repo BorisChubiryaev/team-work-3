@@ -38,11 +38,12 @@ cp .env.example .env.local
 1. Создай проект в Supabase.
 2. Открой SQL Editor и выполни `supabase/migrations/001_initial_schema.sql`.
 3. В Authentication → Providers включи Email.
-4. Для Google включи Google provider и добавь свежие `Client ID` / `Client Secret`.
-5. В Authentication → URL Configuration добавь:
+4. В Authentication → Providers → Email включи `Confirm email`, чтобы регистрация требовала перехода по ссылке из письма.
+5. Для Google включи Google provider и добавь свежие `Client ID` / `Client Secret`.
+6. В Authentication → URL Configuration добавь:
    - локально: `http://localhost:5173`;
    - на Vercel: URL продакшн-домена.
-6. Скопируй `Project URL` и `anon public key` в `.env.local`.
+7. Скопируй `Project URL` и `anon public key` в `.env.local`.
 
 ## Vercel
 

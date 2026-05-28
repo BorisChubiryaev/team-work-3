@@ -117,7 +117,20 @@ export async function loadTeams(userId: string) {
     .eq("user_id", userId);
 
   if (membershipError) throw membershipError;
-  const ids = (memberships ?? []).map((item) => item.team_id as string);
+
+  const { data: ledTeams, error: ledTeamsError } = await client
+    .from("teams")
+    .select("id")
+    .eq("lead_id", userId);
+
+  if (ledTeamsError) throw ledTeamsError;
+
+  const ids = Array.from(
+    new Set([
+      ...(memberships ?? []).map((item) => item.team_id as string),
+      ...(ledTeams ?? []).map((item) => item.id as string),
+    ])
+  );
   if (ids.length === 0) return [];
 
   const { data: teamRows, error: teamError } = await client
