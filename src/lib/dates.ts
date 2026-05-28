@@ -21,5 +21,10 @@ export function getWeekLabel(weekStart = getWeekStart()) {
   return `${format.format(weekStart)}-${format.format(end)}`;
 }
 
+export function getWeekLabelFromDateInput(value: string) {
+  const [year, month, day] = value.split("-").map(Number);
+  return getWeekLabel(new Date(year, month - 1, day));
+}
+
 export const currentWeekStart = toDateInputValue(getWeekStart());
 export const currentWeekLabel = getWeekLabel(getWeekStart());

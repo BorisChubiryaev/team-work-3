@@ -3,11 +3,10 @@ import {
   Bot,
   CalendarClock,
   Check,
-  ChevronRight,
-  ClipboardCheck,
-  Clock3,
   FileText,
+  Home,
   KeyRound,
+  ListChecks,
   LogOut,
   Mail,
   MessageSquareReply,
@@ -22,7 +21,7 @@ import {
   X,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { currentUser, employeeUser, initialReports, initialSummary, initialTeam } from "./data";
+import ReactMarkdown from "react-markdown";
 import {
   createTeam,
   ensureProfile,
@@ -36,9 +35,20 @@ import {
   submitReport,
   updateTeamJoinCode,
 } from "./lib/db";
-import { currentWeekLabel, currentWeekStart } from "./lib/dates";
+import { currentWeekStart, getWeekLabelFromDateInput } from "./lib/dates";
 import { hasSupabaseConfig, supabase } from "./lib/supabase";
 import type { ReportStatus, Role, Summary, Team, TeamMember, WeeklyReport } from "./types";
+
+type LeadTab = "home" | "reports" | "team" | "summary";
+type MemberTab = "report" | "team";
+
+const emptySummary: Summary = {
+  highlights: [],
+  blockers: [],
+  nextSteps: [],
+  risks: [],
+  raw: "",
+};
 
 const statusLabels: Record<ReportStatus, string> = {
   draft: "Черновик",
@@ -81,33 +91,30 @@ function App() {
   const [profile, setProfile] = useState<TeamMember | null>(null);
   const [authLoading, setAuthLoading] = useState(hasSupabaseConfig);
   const [authMessage, setAuthMessage] = useState("");
-  const [teams, setTeams] = useState<Team[]>(hasSupabaseConfig ? [] : [initialTeam]);
-  const [selectedTeamId, setSelectedTeamId] = useState(initialTeam.id);
-  const [reports, setReports] = useState<WeeklyReport[]>(hasSupabaseConfig ? [] : initialReports);
-  const [summary, setSummary] = useState<Summary>(initialSummary);
-  const [previewRole, setPreviewRole] = useState<Role>("lead");
+  const [teams, setTeams] = useState<Team[]>([]);
+  const [selectedTeamId, setSelectedTeamId] = useState("");
+  const [selectedWeekStart, setSelectedWeekStart] = useState(currentWeekStart);
+  const [reports, setReports] = useState<WeeklyReport[]>([]);
+  const [summary, setSummary] = useState<Summary>(emptySummary);
+  const [leadTab, setLeadTab] = useState<LeadTab>("home");
+  const [memberTab, setMemberTab] = useState<MemberTab>("report");
   const [comment, setComment] = useState("");
   const [joinCode, setJoinCode] = useState("");
   const [newSection, setNewSection] = useState("");
-  const [draftSections, setDraftSections] = useState<Record<string, string>>({
-    Сделано:
-      "Встреча с AI Lab / подготовка конференции RecSys 2026.\nДемо МАРК / проекты / участие в обсуждении.",
-    Блокеры: "Нужны уточнения по владельцам данных и срокам поставок.",
-    Планы:
-      "Собрать обратную связь от юнитов.\nПодготовить короткую сводку по рискам и зависимостям.",
-  });
-  const [selectedReportId, setSelectedReportId] = useState(initialReports[0]?.id ?? "");
+  const [draftSections, setDraftSections] = useState<Record<string, string>>({});
+  const [selectedReportId, setSelectedReportId] = useState("");
   const [aiDraft, setAiDraft] = useState("");
   const [aiBusy, setAiBusy] = useState(false);
   const [aiError, setAiError] = useState("");
   const [busy, setBusy] = useState(false);
   const [appError, setAppError] = useState("");
 
+  const selectedWeekLabel = getWeekLabelFromDateInput(selectedWeekStart);
   const team = teams.find((item) => item.id === selectedTeamId) ?? teams[0] ?? null;
-  const activeUser = profile ?? (previewRole === "lead" ? currentUser : employeeUser);
-  const currentMembershipRole =
-    team?.members.find((member) => member.id === activeUser.id)?.role ?? previewRole;
-  const role = hasSupabaseConfig ? currentMembershipRole : previewRole;
+  const activeUser = profile;
+  const role: Role =
+    team?.members.find((member) => member.id === activeUser?.id)?.role ??
+    (team?.leadId === activeUser?.id ? "lead" : "member");
   const selectedReport = reports.find((report) => report.id === selectedReportId) ?? reports[0] ?? null;
   const employees = team?.members.filter((member) => member.role === "member") ?? [];
   const memberReports = reports.filter((report) => report.employeeId !== team?.leadId);
@@ -117,20 +124,13 @@ function App() {
     if (employees.length === 0) return 0;
     return Math.round(((employees.length - missingEmployees.length) / employees.length) * 100);
   }, [employees.length, missingEmployees.length]);
-
-  const employeeReport =
-    reports.find((report) => report.employeeId === activeUser.id) ??
-    ({
-      id: "report-new",
-      employeeId: activeUser.id,
-      employeeName: activeUser.name,
-      week: currentWeekLabel,
-      status: "draft",
-      sections: draftSections,
-    } satisfies WeeklyReport);
+  const employeeReport = reports.find((report) => report.employeeId === activeUser?.id) ?? null;
 
   useEffect(() => {
-    if (!hasSupabaseConfig || !supabase) return;
+    if (!hasSupabaseConfig || !supabase) {
+      setAuthLoading(false);
+      return;
+    }
 
     supabase.auth.getSession().then(({ data }) => {
       setSession(data.session);
@@ -147,21 +147,20 @@ function App() {
 
   useEffect(() => {
     if (!hasSupabaseConfig || !session?.user) {
-      if (hasSupabaseConfig) {
-        setProfile(null);
-        setTeams([]);
-        setReports([]);
-      }
+      setProfile(null);
+      setTeams([]);
+      setReports([]);
       return;
     }
 
     void bootstrap(session.user);
-    // The workspace should reload when the authenticated identity changes.
+    // Reload only when the authenticated user changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session?.user?.id]);
 
   useEffect(() => {
     if (!team) return;
+
     setDraftSections((prev) => {
       const next = { ...prev };
       team.template.sections.forEach((section) => {
@@ -170,32 +169,47 @@ function App() {
       return next;
     });
 
-    if (hasSupabaseConfig) void reloadReports(team.id);
-    // Template hydration and report reload are intentionally keyed by selected team.
+    void reloadWeekData(team.id, selectedWeekStart);
+    // Week data is keyed by selected team and selected week.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [team?.id]);
+  }, [team?.id, selectedWeekStart]);
+
+  useEffect(() => {
+    if (!team || !activeUser) return;
+    const report = reports.find((item) => item.employeeId === activeUser.id);
+    if (report) {
+      setDraftSections((prev) => ({ ...prev, ...report.sections }));
+      return;
+    }
+
+    setDraftSections((prev) => {
+      const next: Record<string, string> = {};
+      team.template.sections.forEach((section) => {
+        next[section] = prev[section] ?? "";
+      });
+      return next;
+    });
+    // Draft hydration is tied to the selected user/team/report set.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeUser?.id, reports, team]);
 
   async function bootstrap(user: User) {
     setBusy(true);
     setAppError("");
     try {
       const nextProfile = await ensureProfile(user);
-      const member: TeamMember = {
+      setProfile({
         id: nextProfile.id,
         email: nextProfile.email,
         name: nextProfile.full_name || nextProfile.email,
         role: "member",
-      };
-      setProfile(member);
+      });
 
       const loadedTeams = await loadTeams(user.id);
       setTeams(loadedTeams);
-      if (loadedTeams[0]) {
-        setSelectedTeamId(loadedTeams[0].id);
-        await reloadReports(loadedTeams[0].id);
-        const latestSummary = await loadLatestSummary(loadedTeams[0].id);
-        if (latestSummary) setSummary(latestSummary);
-      }
+      setSelectedTeamId((current) =>
+        current && loadedTeams.some((item) => item.id === current) ? current : loadedTeams[0]?.id ?? ""
+      );
     } catch (error) {
       setAppError(error instanceof Error ? error.message : "Не удалось загрузить данные");
     } finally {
@@ -204,28 +218,40 @@ function App() {
   }
 
   async function reloadWorkspace() {
-    if (!session?.user) return;
-    await bootstrap(session.user);
+    if (session?.user) await bootstrap(session.user);
   }
 
-  async function reloadReports(teamId: string) {
-    if (!hasSupabaseConfig) return;
-    const loadedReports = await loadReports(teamId);
-    setReports(loadedReports);
-    setSelectedReportId(loadedReports[0]?.id ?? "");
+  async function reloadWeekData(teamId: string, weekStart = selectedWeekStart) {
+    setBusy(true);
+    setAppError("");
+    try {
+      const [loadedReports, latestSummary] = await Promise.all([
+        loadReports(teamId, weekStart),
+        loadLatestSummary(teamId, weekStart),
+      ]);
+      setReports(loadedReports);
+      setSummary(latestSummary ?? emptySummary);
+      setSelectedReportId((current) =>
+        current && loadedReports.some((report) => report.id === current) ? current : loadedReports[0]?.id ?? ""
+      );
+    } catch (error) {
+      setAppError(error instanceof Error ? error.message : "Не удалось загрузить неделю");
+    } finally {
+      setBusy(false);
+    }
   }
 
   function updateLocalTeam(nextTeam: Team) {
     setTeams((prev) => prev.map((item) => (item.id === nextTeam.id ? nextTeam : item)));
   }
 
-  async function persistTeam(nextTeam?: Team) {
-    nextTeam ??= team ?? undefined;
-    if (!nextTeam) return;
+  async function persistTeam() {
+    if (!team) return;
+    const snapshot = team;
     setBusy(true);
     setAppError("");
     try {
-      if (hasSupabaseConfig) await saveTeam(nextTeam);
+      await saveTeam(snapshot);
       setAuthMessage("Команда сохранена");
     } catch (error) {
       setAppError(error instanceof Error ? error.message : "Не удалось сохранить команду");
@@ -245,14 +271,7 @@ function App() {
     setBusy(true);
     setAppError("");
     try {
-      await createTeam({
-        leadId: session.user.id,
-        name: input.name,
-        deadlineDay: input.deadlineDay,
-        deadlineTime: input.deadlineTime,
-        sections: input.sections,
-        instructions: input.instructions,
-      });
+      await createTeam({ leadId: session.user.id, ...input });
       await reloadWorkspace();
     } catch (error) {
       setAppError(error instanceof Error ? error.message : "Не удалось создать команду");
@@ -261,13 +280,9 @@ function App() {
     }
   }
 
-  async function handleJoinTeam(code?: string) {
-    const codeToJoin = typeof code === "string" ? code : joinCode;
-    if (!session?.user) return;
-    if (!codeToJoin.trim()) {
-      setAppError("Введите код команды");
-      return;
-    }
+  async function handleJoinTeam(code = joinCode) {
+    const codeToJoin = code.trim();
+    if (!session?.user || !codeToJoin) return;
     setBusy(true);
     setAppError("");
     try {
@@ -292,10 +307,7 @@ function App() {
     if (!clean || team.template.sections.includes(clean)) return;
     updateLocalTeam({
       ...team,
-      template: {
-        ...team.template,
-        sections: [...team.template.sections, clean],
-      },
+      template: { ...team.template, sections: [...team.template.sections, clean] },
     });
     setDraftSections((prev) => ({ ...prev, [clean]: "" }));
     setNewSection("");
@@ -303,18 +315,16 @@ function App() {
 
   async function regenerateCode() {
     if (!team) return;
-    const joinCode = createJoinCode();
-    const nextTeam = { ...team, joinCode };
-    updateLocalTeam(nextTeam);
-    if (hasSupabaseConfig) {
-      setBusy(true);
-      try {
-        await updateTeamJoinCode(team.id, joinCode);
-      } catch (error) {
-        setAppError(error instanceof Error ? error.message : "Не удалось обновить код");
-      } finally {
-        setBusy(false);
-      }
+    const nextCode = createJoinCode();
+    updateLocalTeam({ ...team, joinCode: nextCode });
+    setBusy(true);
+    setAppError("");
+    try {
+      await updateTeamJoinCode(team.id, nextCode);
+    } catch (error) {
+      setAppError(error instanceof Error ? error.message : "Не удалось обновить код");
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -323,35 +333,31 @@ function App() {
   }
 
   async function submitDraft() {
-    if (!team) return;
+    if (!team || !activeUser) return;
+    const optimisticReport: WeeklyReport = {
+      id: employeeReport?.id ?? "optimistic-report",
+      employeeId: activeUser.id,
+      employeeName: activeUser.name,
+      week: selectedWeekLabel,
+      status: "submitted",
+      submittedAt: "только что",
+      sections: draftSections,
+    };
+    setReports((prev) => {
+      const withoutOwn = prev.filter((report) => report.employeeId !== activeUser.id);
+      return [optimisticReport, ...withoutOwn];
+    });
     setBusy(true);
     setAppError("");
     try {
-      if (hasSupabaseConfig) {
-        await submitReport({
-          teamId: team.id,
-          employeeId: activeUser.id,
-          weekStart: currentWeekStart,
-          weekLabel: currentWeekLabel,
-          sections: draftSections,
-        });
-        await reloadReports(team.id);
-      } else {
-        const nextReport: WeeklyReport = {
-          ...employeeReport,
-          sections: draftSections,
-          status: "submitted",
-          submittedAt: "Сегодня, 17:05",
-          returnedComment: undefined,
-        };
-        setReports((prev) => {
-          const exists = prev.some((report) => report.id === nextReport.id);
-          return exists
-            ? prev.map((report) => (report.id === nextReport.id ? nextReport : report))
-            : [nextReport, ...prev];
-        });
-        setSelectedReportId(nextReport.id);
-      }
+      await submitReport({
+        teamId: team.id,
+        employeeId: activeUser.id,
+        weekStart: selectedWeekStart,
+        weekLabel: selectedWeekLabel,
+        sections: draftSections,
+      });
+      await reloadWeekData(team.id, selectedWeekStart);
     } catch (error) {
       setAppError(error instanceof Error ? error.message : "Не удалось отправить отчет");
     } finally {
@@ -361,27 +367,18 @@ function App() {
 
   async function reviewReport(status: "approved" | "returned") {
     if (!selectedReport || !team) return;
+    const nextComment = status === "returned" ? comment || "Нужны уточнения перед принятием." : undefined;
+    setReports((prev) =>
+      prev.map((report) =>
+        report.id === selectedReport.id ? { ...report, status, returnedComment: nextComment } : report
+      )
+    );
+    setComment("");
     setBusy(true);
     setAppError("");
     try {
-      if (hasSupabaseConfig) {
-        await reviewReportInDb(selectedReport.id, status, comment);
-        await reloadReports(team.id);
-      } else {
-        setReports((prev) =>
-          prev.map((report) =>
-            report.id === selectedReport.id
-              ? {
-                  ...report,
-                  status,
-                  returnedComment:
-                    status === "returned" ? comment || "Нужны уточнения перед принятием." : undefined,
-                }
-              : report
-          )
-        );
-      }
-      setComment("");
+      await reviewReportInDb(selectedReport.id, status, comment);
+      await reloadWeekData(team.id, selectedWeekStart);
     } catch (error) {
       setAppError(error instanceof Error ? error.message : "Не удалось обновить отчет");
     } finally {
@@ -393,17 +390,12 @@ function App() {
     setAiBusy(true);
     setAiError("");
     try {
-      const result = await callAi("assist", {
-        template: team?.template,
-        report: draftSections,
-      });
+      const result = await callAi("assist", { template: team?.template, report: draftSections });
       setAiDraft(result.text);
     } catch {
-      setAiError(
-        "AI API пока не настроен локально. После добавления OPENROUTER_API_KEY на Vercel помощник начнет отвечать."
-      );
+      setAiError("AI API пока не настроен или временно недоступен.");
       setAiDraft(
-        "Можно усилить отчет так:\n- Разделить активности по проектам.\n- Указать результат, а не только факт встречи.\n- В блокерах явно написать, чье решение требуется.\n- В планах добавить 2-3 измеримых шага на следующую неделю."
+        "### Как усилить отчет\n\n- Раздели активности по проектам.\n- Укажи результат, а не только факт встречи.\n- В блокерах напиши, чье решение требуется.\n- В планах добавь 2-3 измеримых шага."
       );
     } finally {
       setAiBusy(false);
@@ -411,32 +403,29 @@ function App() {
   }
 
   async function summarizeReports() {
-    if (!team) return;
+    if (!team || !session?.user) return;
     setAiBusy(true);
     setAiError("");
     try {
       const result = await callAi("summarize", {
         teamName: team.name,
+        week: selectedWeekLabel,
         reports: memberReports.map((report) => ({
           employeeName: report.employeeName,
           status: report.status,
           content: textFromReport(report),
         })),
       });
-      const nextSummary = { ...summary, raw: result.text };
+      const nextSummary = { ...emptySummary, raw: result.text };
       setSummary(nextSummary);
-      if (hasSupabaseConfig && session?.user) {
-        await saveSummary({
-          teamId: team.id,
-          weekStart: currentWeekStart,
-          content: nextSummary,
-          createdBy: session.user.id,
-        });
-      }
+      await saveSummary({
+        teamId: team.id,
+        weekStart: selectedWeekStart,
+        content: nextSummary,
+        createdBy: session.user.id,
+      });
     } catch {
-      setAiError(
-        "Суммаризация сейчас работает в демо-режиме. Для настоящих ответов добавь OPENROUTER_API_KEY в переменные окружения Vercel."
-      );
+      setAiError("Не удалось получить AI-сводку. Проверь OPENROUTER_API_KEY на Vercel.");
     } finally {
       setAiBusy(false);
     }
@@ -450,24 +439,14 @@ function App() {
     setReports([]);
   }
 
-  if (authLoading) {
-    return <LoadingScreen />;
-  }
+  if (authLoading) return <LoadingScreen />;
+  if (!hasSupabaseConfig) return <SetupScreen />;
+  if (!session) return <AuthScreen message={authMessage} setMessage={setAuthMessage} />;
 
-  if (hasSupabaseConfig && !session) {
-    return <AuthScreen message={authMessage} setMessage={setAuthMessage} />;
-  }
-
-  if (hasSupabaseConfig && teams.length === 0) {
+  if (teams.length === 0) {
     return (
-      <main className="app-shell">
-        <ShellHeader
-          role={role}
-          setRole={setPreviewRole}
-          profile={profile}
-          onSignOut={signOut}
-          canSwitchRole={false}
-        />
+      <main className="app-shell app-with-nav">
+        <ShellHeader title="Старт" profile={profile} onSignOut={signOut} />
         {appError && <p className="global-error">{appError}</p>}
         <Onboarding
           busy={busy}
@@ -480,44 +459,25 @@ function App() {
     );
   }
 
-  if (!team) {
-    return <LoadingScreen />;
-  }
+  if (!team) return <LoadingScreen />;
 
   return (
-    <main className="app-shell">
-      <ShellHeader
-        role={role}
-        setRole={setPreviewRole}
-        profile={profile}
-        onSignOut={hasSupabaseConfig ? signOut : undefined}
-        canSwitchRole={!hasSupabaseConfig}
-      />
-
-      {!hasSupabaseConfig && (
-        <p className="config-banner">
-          Демо-режим: добавь `VITE_SUPABASE_URL` и `VITE_SUPABASE_ANON_KEY`, чтобы включить настоящий логин и базу.
-        </p>
-      )}
+    <main className="app-shell app-with-nav">
+      <ShellHeader title={team.name} profile={profile} onSignOut={signOut} />
       {appError && <p className="global-error">{appError}</p>}
       {authMessage && <p className="global-success">{authMessage}</p>}
 
-      {hasSupabaseConfig && teams.length > 1 && (
-        <section className="team-tabs">
-          {teams.map((item) => (
-            <button
-              key={item.id}
-              className={item.id === team.id ? "active" : ""}
-              onClick={() => setSelectedTeamId(item.id)}
-            >
-              {item.name}
-            </button>
-          ))}
-        </section>
-      )}
+      <WorkspaceToolbar
+        teams={teams}
+        selectedTeamId={team.id}
+        onSelectTeam={setSelectedTeamId}
+        selectedWeekStart={selectedWeekStart}
+        setSelectedWeekStart={setSelectedWeekStart}
+      />
 
       {role === "lead" ? (
         <LeadWorkspace
+          tab={leadTab}
           team={team}
           updateLocalTeam={updateLocalTeam}
           selectedReport={selectedReport}
@@ -541,9 +501,11 @@ function App() {
           updateTemplateField={updateTemplateField}
           persistTeam={persistTeam}
           regenerateCode={regenerateCode}
+          selectedWeekLabel={selectedWeekLabel}
         />
       ) : (
         <MemberWorkspace
+          tab={memberTab}
           team={team}
           joinCode={joinCode}
           setJoinCode={setJoinCode}
@@ -557,6 +519,29 @@ function App() {
           aiError={aiError}
           busy={busy}
           employeeReport={employeeReport}
+          selectedWeekLabel={selectedWeekLabel}
+        />
+      )}
+
+      {role === "lead" ? (
+        <BottomNav
+          items={[
+            { id: "home", label: "Главная", icon: Home },
+            { id: "reports", label: "Отчеты", icon: ListChecks },
+            { id: "team", label: "Команда", icon: UsersRound },
+            { id: "summary", label: "Сводка", icon: Sparkles },
+          ]}
+          active={leadTab}
+          onChange={(value) => setLeadTab(value as LeadTab)}
+        />
+      ) : (
+        <BottomNav
+          items={[
+            { id: "report", label: "Отчет", icon: PencilLine },
+            { id: "team", label: "Команда", icon: UsersRound },
+          ]}
+          active={memberTab}
+          onChange={(value) => setMemberTab(value as MemberTab)}
         />
       )}
     </main>
@@ -571,7 +556,7 @@ function LoadingScreen() {
           <RefreshCw />
           <div>
             <p>Еженедельник</p>
-            <h2>Загружаю рабочее пространство</h2>
+            <h2>Загружаю</h2>
           </div>
         </div>
       </section>
@@ -579,69 +564,84 @@ function LoadingScreen() {
   );
 }
 
+function SetupScreen() {
+  return (
+    <main className="app-shell centered-shell">
+      <section className="paper-panel auth-panel">
+        <div className="panel-title">
+          <KeyRound />
+          <div>
+            <p>Настройка</p>
+            <h2>Подключи Supabase</h2>
+          </div>
+        </div>
+        <p className="note">
+          Приложение больше не использует моковые данные. Добавь `VITE_SUPABASE_URL` и
+          `VITE_SUPABASE_ANON_KEY` в `.env.local`, затем перезапусти dev server.
+        </p>
+      </section>
+    </main>
+  );
+}
+
 function ShellHeader({
-  role,
-  setRole,
+  title,
   profile,
   onSignOut,
-  canSwitchRole,
 }: {
-  role: Role;
-  setRole: (role: Role) => void;
+  title: string;
   profile: TeamMember | null;
-  onSignOut?: () => void;
-  canSwitchRole: boolean;
+  onSignOut: () => void;
 }) {
   return (
-    <>
-      <section className="topbar">
-        <div>
-          <p className="eyebrow">Еженедельник</p>
-          <h1>Отчеты команды без ручной сводки</h1>
-        </div>
-        <div className="header-actions">
-          <div className="role-switch" aria-label="Выбор роли">
-            <button
-              className={role === "lead" ? "active" : ""}
-              onClick={() => canSwitchRole && setRole("lead")}
-              disabled={!canSwitchRole}
-            >
-              <ClipboardCheck size={18} />
-              Руководитель
-            </button>
-            <button
-              className={role === "member" ? "active" : ""}
-              onClick={() => canSwitchRole && setRole("member")}
-              disabled={!canSwitchRole}
-            >
-              <PencilLine size={18} />
-              Сотрудник
-            </button>
-          </div>
-          {profile && <span className="user-pill">{profile.name}</span>}
-          {onSignOut && (
-            <button className="icon-button" onClick={onSignOut} aria-label="Выйти">
-              <LogOut size={18} />
-            </button>
-          )}
-        </div>
-      </section>
+    <section className="compact-header">
+      <div>
+        <p className="eyebrow">Еженедельник</p>
+        <h1>{title}</h1>
+      </div>
+      <div className="header-actions">
+        {profile && <span className="user-pill">{profile.name}</span>}
+        <button className="icon-button" onClick={onSignOut} aria-label="Выйти">
+          <LogOut size={18} />
+        </button>
+      </div>
+    </section>
+  );
+}
 
-      <section className="auth-strip">
-        <div>
-          <Mail size={18} />
-          Вход по почте
-        </div>
-        <div>
-          <KeyRound size={18} />
-          Google OAuth через Supabase Auth
-        </div>
-        <div>
-          <Bot size={18} />
-          OpenRouter AI через Vercel Function
-        </div>
-      </section>
-    </>
+function WorkspaceToolbar({
+  teams,
+  selectedTeamId,
+  onSelectTeam,
+  selectedWeekStart,
+  setSelectedWeekStart,
+}: {
+  teams: Team[];
+  selectedTeamId: string;
+  onSelectTeam: (id: string) => void;
+  selectedWeekStart: string;
+  setSelectedWeekStart: (value: string) => void;
+}) {
+  return (
+    <section className="workspace-toolbar">
+      {teams.length > 1 && (
+        <select value={selectedTeamId} onChange={(event) => onSelectTeam(event.target.value)}>
+          {teams.map((team) => (
+            <option key={team.id} value={team.id}>
+              {team.name}
+            </option>
+          ))}
+        </select>
+      )}
+      <label>
+        Неделя
+        <input
+          type="date"
+          value={selectedWeekStart}
+          onChange={(event) => setSelectedWeekStart(event.target.value)}
+        />
+      </label>
+    </section>
   );
 }
 
@@ -680,7 +680,7 @@ function AuthScreen({
         setMessage(
           data.session
             ? "Аккаунт создан, вход выполнен."
-            : "Письмо подтверждения отправлено. Открой ссылку из письма, затем войди в приложение."
+            : "Письмо подтверждения отправлено. Открой ссылку из письма, затем войди."
         );
       } else {
         const { error: signInError } = await supabase.auth.signInWithPassword({ email, password });
@@ -713,8 +713,8 @@ function AuthScreen({
         <div className="panel-title">
           <KeyRound />
           <div>
-            <p>Supabase Auth</p>
-            <h2>{mode === "login" ? "Войти в Еженедельник" : "Создать аккаунт"}</h2>
+            <p>Аккаунт</p>
+            <h2>{mode === "login" ? "Войти" : "Регистрация"}</h2>
           </div>
         </div>
         <div className="segmented">
@@ -753,7 +753,7 @@ function AuthScreen({
         </form>
         <button className="secondary wide-button" onClick={signInWithGoogle} disabled={busy}>
           <KeyRound size={17} />
-          Войти через Google
+          Google
         </button>
         {message && <p className="global-success">{message}</p>}
         {error && <p className="global-error">{error}</p>}
@@ -856,17 +856,17 @@ function Onboarding({
             onChange={(event) => setJoinCode(event.target.value.toUpperCase())}
             placeholder="Например NOTE42"
           />
-          <button disabled={busy || !joinCode} onClick={() => onJoin()}>
-            <ChevronRight size={18} />
+          <button disabled={busy || !joinCode} onClick={onJoin}>
+            Войти
           </button>
         </div>
-        <p className="note">Код выдает руководитель после создания команды.</p>
       </section>
     </div>
   );
 }
 
 type LeadProps = {
+  tab: LeadTab;
   team: Team;
   updateLocalTeam: (team: Team) => void;
   selectedReport: WeeklyReport | null;
@@ -890,10 +890,12 @@ type LeadProps = {
   updateTemplateField: (field: "instructions" | "mode", value: string) => void;
   persistTeam: () => void;
   regenerateCode: () => void;
+  selectedWeekLabel: string;
 };
 
 function LeadWorkspace(props: LeadProps) {
   const {
+    tab,
     team,
     updateLocalTeam,
     selectedReport,
@@ -917,219 +919,93 @@ function LeadWorkspace(props: LeadProps) {
     updateTemplateField,
     persistTeam,
     regenerateCode,
+    selectedWeekLabel,
   } = props;
 
+  if (tab === "home") {
+    return (
+      <div className="workspace dashboard-grid">
+        <StatusPanel
+          team={team}
+          completion={completion}
+          employees={employees}
+          reportByEmployee={reportByEmployee}
+          missingEmployees={missingEmployees}
+          setSelectedReportId={setSelectedReportId}
+        />
+        <section className="paper-panel">
+          <div className="panel-title">
+            <CalendarClock />
+            <div>
+              <p>Неделя</p>
+              <h2>{selectedWeekLabel}</h2>
+            </div>
+          </div>
+          <p className="note">Отправлено отчетов: {reports.length}. На проверке: {reports.filter((r) => r.status === "submitted").length}.</p>
+        </section>
+      </div>
+    );
+  }
+
+  if (tab === "reports") {
+    return (
+      <div className="workspace reports-grid">
+        <StatusPanel
+          team={team}
+          completion={completion}
+          employees={employees}
+          reportByEmployee={reportByEmployee}
+          missingEmployees={missingEmployees}
+          setSelectedReportId={setSelectedReportId}
+        />
+        <ReportReader
+          selectedReport={selectedReport}
+          comment={comment}
+          setComment={setComment}
+          reviewReport={reviewReport}
+          busy={busy}
+        />
+        <ReportTable reports={reports} />
+      </div>
+    );
+  }
+
+  if (tab === "team") {
+    return (
+      <div className="workspace team-settings-grid">
+        <TeamSettings
+          team={team}
+          updateLocalTeam={updateLocalTeam}
+          persistTeam={persistTeam}
+          regenerateCode={regenerateCode}
+          busy={busy}
+        />
+        <TemplateSettings
+          team={team}
+          updateTemplateField={updateTemplateField}
+          addSection={addSection}
+          newSection={newSection}
+          setNewSection={setNewSection}
+        />
+      </div>
+    );
+  }
+
   return (
-    <div className="workspace lead-grid">
-      <section className="paper-panel team-panel">
-        <div className="panel-title">
-          <UsersRound />
-          <div>
-            <p>Команда</p>
-            <h2>{team.name}</h2>
-          </div>
-        </div>
-        <label>
-          Название команды
-          <input value={team.name} onChange={(event) => updateLocalTeam({ ...team, name: event.target.value })} />
-        </label>
-        <div className="deadline-row">
-          <label>
-            День
-            <select
-              value={team.deadlineDay}
-              onChange={(event) => updateLocalTeam({ ...team, deadlineDay: event.target.value })}
-            >
-              {["Понедельник", "Вторник", "Среда", "Четверг", "Пятница"].map((day) => (
-                <option key={day}>{day}</option>
-              ))}
-            </select>
-          </label>
-          <label>
-            До
-            <input
-              type="time"
-              value={team.deadlineTime}
-              onChange={(event) => updateLocalTeam({ ...team, deadlineTime: event.target.value })}
-            />
-          </label>
-        </div>
-        <div className="join-card">
-          <span>Код для сотрудников</span>
-          <strong>{team.joinCode}</strong>
-          <button onClick={regenerateCode} disabled={busy} aria-label="Обновить код">
-            <RefreshCw size={16} />
-          </button>
-        </div>
-        <button onClick={() => persistTeam()} disabled={busy}>
-          <Save size={17} />
-          Сохранить команду
-        </button>
-      </section>
-
-      <section className="paper-panel">
-        <div className="panel-title">
-          <FileText />
-          <div>
-            <p>Форма отчета</p>
-            <h2>Шаблон недели</h2>
-          </div>
-        </div>
-        <div className="segmented">
-          <button
-            className={team.template.mode === "structured" ? "active" : ""}
-            onClick={() => updateTemplateField("mode", "structured")}
-          >
-            По разделам
-          </button>
-          <button
-            className={team.template.mode === "free" ? "active" : ""}
-            onClick={() => updateTemplateField("mode", "free")}
-          >
-            Свободный текст
-          </button>
-        </div>
-        <label>
-          Инструкция сотрудникам
-          <textarea
-            value={team.template.instructions}
-            onChange={(event) => updateTemplateField("instructions", event.target.value)}
-            rows={4}
-          />
-        </label>
-        <div className="chips">
-          {team.template.sections.map((section) => (
-            <span key={section}>{section}</span>
-          ))}
-        </div>
-        <div className="add-row">
-          <input
-            value={newSection}
-            onChange={(event) => setNewSection(event.target.value)}
-            placeholder="Новый раздел"
-          />
-          <button onClick={addSection}>
-            <Plus size={16} />
-          </button>
-        </div>
-      </section>
-
-      <section className="paper-panel status-panel">
-        <div className="panel-title">
-          <CalendarClock />
-          <div>
-            <p>
-              Дедлайн: {team.deadlineDay}, {team.deadlineTime}
-            </p>
-            <h2>{completion}% сдали</h2>
-          </div>
-        </div>
-        <div className="progress">
-          <span style={{ width: `${completion}%` }} />
-        </div>
-        <div className="employee-list">
-          {employees.map((employee) => {
-            const report = reportByEmployee.get(employee.id);
-            return (
-              <button key={employee.id} onClick={() => report && setSelectedReportId(report.id)}>
-                <span>{employee.name}</span>
-                <Badge status={report?.status ?? "draft"}>{report ? statusLabels[report.status] : "Не сдал"}</Badge>
-              </button>
-            );
-          })}
-        </div>
-        {missingEmployees.length > 0 && (
-          <p className="note">Не отправили: {missingEmployees.map((member) => member.name).join(", ")}</p>
-        )}
-      </section>
-
-      <section className="paper-panel report-reader">
-        {selectedReport ? (
-          <>
-            <div className="panel-title">
-              <MessageSquareReply />
-              <div>
-                <p>{selectedReport.employeeName}</p>
-                <h2>Отчет за {selectedReport.week}</h2>
-              </div>
-            </div>
-            <Badge status={selectedReport.status}>{statusLabels[selectedReport.status]}</Badge>
-            <div className="report-body">
-              {Object.entries(selectedReport.sections).map(([section, content]) => (
-                <article key={section}>
-                  <h3>{section}</h3>
-                  <p>{content || "Раздел не заполнен"}</p>
-                </article>
-              ))}
-            </div>
-            <textarea
-              value={comment}
-              onChange={(event) => setComment(event.target.value)}
-              rows={3}
-              placeholder="Комментарий для возврата на исправление"
-            />
-            <div className="actions">
-              <button className="secondary" onClick={() => reviewReport("returned")} disabled={busy}>
-                <X size={17} />
-                Вернуть
-              </button>
-              <button onClick={() => reviewReport("approved")} disabled={busy}>
-                <Check size={17} />
-                Принять
-              </button>
-            </div>
-          </>
-        ) : (
-          <EmptyPanel title="Отчетов пока нет" text="Когда сотрудники отправят отчеты, они появятся здесь." />
-        )}
-      </section>
-
-      <section className="paper-panel summary-panel">
-        <div className="panel-title">
-          <Sparkles />
-          <div>
-            <p>AI-сводка</p>
-            <h2>Для руководителя</h2>
-          </div>
-        </div>
-        <button className="wide-button" onClick={summarizeReports} disabled={aiBusy || reports.length === 0}>
-          <Sparkles size={18} />
-          {aiBusy ? "Собираю сводку..." : "Суммаризировать отчеты"}
-        </button>
-        {aiError && <p className="error-line">{aiError}</p>}
-        <SummaryBlock title="Главное" items={summary.highlights} />
-        <SummaryBlock title="Блокеры" items={summary.blockers} />
-        <SummaryBlock title="Следующие шаги" items={summary.nextSteps} />
-        <SummaryBlock title="Риски" items={summary.risks} />
-        <p className="summary-raw">{summary.raw}</p>
-      </section>
-
-      <section className="paper-panel table-panel">
-        <div className="panel-title">
-          <Table2 />
-          <div>
-            <p>Сверка</p>
-            <h2>Отчеты и статусы</h2>
-          </div>
-        </div>
-        <div className="report-table">
-          <div className="table-head">Сотрудник</div>
-          <div className="table-head">Статус</div>
-          <div className="table-head">Коротко</div>
-          {reports.map((report) => (
-            <div className="table-row" key={report.id}>
-              <strong>{report.employeeName}</strong>
-              <Badge status={report.status}>{statusLabels[report.status]}</Badge>
-              <span>{Object.values(report.sections).join(" ").slice(0, 130)}...</span>
-            </div>
-          ))}
-        </div>
-      </section>
+    <div className="workspace summary-only-grid">
+      <SummaryPanel
+        summary={summary}
+        reports={reports}
+        aiBusy={aiBusy}
+        aiError={aiError}
+        summarizeReports={summarizeReports}
+      />
     </div>
   );
 }
 
 type MemberProps = {
+  tab: MemberTab;
   team: Team;
   joinCode: string;
   setJoinCode: (value: string) => void;
@@ -1142,11 +1018,13 @@ type MemberProps = {
   aiDraft: string;
   aiError: string;
   busy: boolean;
-  employeeReport: WeeklyReport;
+  employeeReport: WeeklyReport | null;
+  selectedWeekLabel: string;
 };
 
 function MemberWorkspace(props: MemberProps) {
   const {
+    tab,
     team,
     joinCode,
     setJoinCode,
@@ -1160,72 +1038,75 @@ function MemberWorkspace(props: MemberProps) {
     aiError,
     busy,
     employeeReport,
+    selectedWeekLabel,
   } = props;
 
+  if (tab === "team") {
+    return (
+      <div className="workspace member-team-grid">
+        <section className="paper-panel">
+          <div className="panel-title">
+            <CalendarClock />
+            <div>
+              <p>{team.name}</p>
+              <h2>До {team.deadlineDay.toLowerCase()}, {team.deadlineTime}</h2>
+            </div>
+          </div>
+          <p className="note">{team.template.instructions}</p>
+        </section>
+        <section className="paper-panel">
+          <div className="panel-title">
+            <KeyRound />
+            <div>
+              <p>Еще команда</p>
+              <h2>Войти по коду</h2>
+            </div>
+          </div>
+          <div className="add-row">
+            <input
+              value={joinCode}
+              onChange={(event) => setJoinCode(event.target.value.toUpperCase())}
+              placeholder="Например NOTE42"
+            />
+            <button disabled={!joinCode || busy} onClick={onJoin}>
+              Войти
+            </button>
+          </div>
+        </section>
+      </div>
+    );
+  }
+
   return (
-    <div className="workspace member-grid">
-      <section className="paper-panel">
-        <div className="panel-title">
-          <KeyRound />
-          <div>
-            <p>Присоединение</p>
-            <h2>Код команды</h2>
-          </div>
-        </div>
-        <div className="add-row">
-          <input
-            value={joinCode}
-            onChange={(event) => setJoinCode(event.target.value.toUpperCase())}
-            placeholder="Например NOTE42"
-          />
-          <button disabled={!joinCode || busy} onClick={() => onJoin()}>
-            <ChevronRight size={18} />
-          </button>
-        </div>
-        <p className="note">В настоящем режиме код связывает сотрудника с командой руководителя.</p>
-      </section>
-
-      <section className="paper-panel employee-brief">
-        <div className="panel-title">
-          <Clock3 />
-          <div>
-            <p>{team.name}</p>
-            <h2>
-              Сдать до {team.deadlineDay.toLowerCase()}, {team.deadlineTime}
-            </h2>
-          </div>
-        </div>
-        <p>{team.template.instructions}</p>
-        {employeeReport.returnedComment && (
-          <div className="teacher-note">
-            <strong>Комментарий руководителя</strong>
-            <span>{employeeReport.returnedComment}</span>
-          </div>
-        )}
-      </section>
-
+    <div className="workspace member-report-grid">
       <section className="paper-panel editor-panel">
         <div className="panel-title">
           <PencilLine />
           <div>
             <p>Мой отчет</p>
-            <h2>Неделя {currentWeekLabel}</h2>
+            <h2>Неделя {selectedWeekLabel}</h2>
           </div>
         </div>
+        {employeeReport?.returnedComment && (
+          <div className="teacher-note">
+            <strong>Комментарий руководителя</strong>
+            <span>{employeeReport.returnedComment}</span>
+          </div>
+        )}
         {team.template.sections.map((section) => (
           <label key={section}>
             {section}
             <textarea
               value={draftSections[section] ?? ""}
               onChange={(event) => updateDraft(section, event.target.value)}
-              rows={section === "Сделано" ? 7 : 4}
+              rows={section === "Сделано" ? 8 : 4}
             />
           </label>
         ))}
         <div className="actions">
           <button className="secondary" onClick={improveReport} disabled={aiBusy}>
             <Bot size={17} />
-            {aiBusy ? "Думаю..." : "Помочь с текстом"}
+            {aiBusy ? "Думаю..." : "Помочь"}
           </button>
           <button onClick={submitDraft} disabled={busy}>
             <Send size={17} />
@@ -1243,8 +1124,302 @@ function MemberWorkspace(props: MemberProps) {
           </div>
         </div>
         {aiError && <p className="error-line">{aiError}</p>}
-        <pre>{aiDraft || "Нажми «Помочь с текстом», и помощник предложит, как сделать отчет яснее для руководителя."}</pre>
+        <MarkdownContent
+          value={
+            aiDraft ||
+            "Нажми **Помочь**, и помощник предложит, как сделать отчет яснее для руководителя."
+          }
+        />
       </section>
+    </div>
+  );
+}
+
+function StatusPanel({
+  team,
+  completion,
+  employees,
+  reportByEmployee,
+  missingEmployees,
+  setSelectedReportId,
+}: {
+  team: Team;
+  completion: number;
+  employees: Team["members"];
+  reportByEmployee: Map<string, WeeklyReport>;
+  missingEmployees: Team["members"];
+  setSelectedReportId: (id: string) => void;
+}) {
+  return (
+    <section className="paper-panel status-panel">
+      <div className="panel-title">
+        <CalendarClock />
+        <div>
+          <p>Дедлайн: {team.deadlineDay}, {team.deadlineTime}</p>
+          <h2>{completion}% сдали</h2>
+        </div>
+      </div>
+      <div className="progress">
+        <span style={{ width: `${completion}%` }} />
+      </div>
+      <div className="employee-list">
+        {employees.map((employee) => {
+          const report = reportByEmployee.get(employee.id);
+          return (
+            <button key={employee.id} onClick={() => report && setSelectedReportId(report.id)}>
+              <span>{employee.name}</span>
+              <Badge status={report?.status ?? "draft"}>{report ? statusLabels[report.status] : "Не сдал"}</Badge>
+            </button>
+          );
+        })}
+      </div>
+      {missingEmployees.length > 0 && (
+        <p className="note">Не отправили: {missingEmployees.map((member) => member.name).join(", ")}</p>
+      )}
+    </section>
+  );
+}
+
+function TeamSettings({
+  team,
+  updateLocalTeam,
+  persistTeam,
+  regenerateCode,
+  busy,
+}: {
+  team: Team;
+  updateLocalTeam: (team: Team) => void;
+  persistTeam: () => void;
+  regenerateCode: () => void;
+  busy: boolean;
+}) {
+  return (
+    <section className="paper-panel team-panel">
+      <div className="panel-title">
+        <UsersRound />
+        <div>
+          <p>Команда</p>
+          <h2>{team.name}</h2>
+        </div>
+      </div>
+      <label>
+        Название
+        <input value={team.name} onChange={(event) => updateLocalTeam({ ...team, name: event.target.value })} />
+      </label>
+      <div className="deadline-row">
+        <label>
+          День
+          <select
+            value={team.deadlineDay}
+            onChange={(event) => updateLocalTeam({ ...team, deadlineDay: event.target.value })}
+          >
+            {["Понедельник", "Вторник", "Среда", "Четверг", "Пятница"].map((day) => (
+              <option key={day}>{day}</option>
+            ))}
+          </select>
+        </label>
+        <label>
+          До
+          <input
+            type="time"
+            value={team.deadlineTime}
+            onChange={(event) => updateLocalTeam({ ...team, deadlineTime: event.target.value })}
+          />
+        </label>
+      </div>
+      <div className="join-card">
+        <span>Код для сотрудников</span>
+        <strong>{team.joinCode}</strong>
+        <button onClick={regenerateCode} disabled={busy} aria-label="Обновить код">
+          <RefreshCw size={16} />
+        </button>
+      </div>
+      <button onClick={persistTeam} disabled={busy}>
+        <Save size={17} />
+        Сохранить
+      </button>
+    </section>
+  );
+}
+
+function TemplateSettings({
+  team,
+  updateTemplateField,
+  addSection,
+  newSection,
+  setNewSection,
+}: {
+  team: Team;
+  updateTemplateField: (field: "instructions" | "mode", value: string) => void;
+  addSection: () => void;
+  newSection: string;
+  setNewSection: (value: string) => void;
+}) {
+  return (
+    <section className="paper-panel">
+      <div className="panel-title">
+        <FileText />
+        <div>
+          <p>Форма</p>
+          <h2>Шаблон отчета</h2>
+        </div>
+      </div>
+      <div className="segmented">
+        <button
+          className={team.template.mode === "structured" ? "active" : ""}
+          onClick={() => updateTemplateField("mode", "structured")}
+        >
+          Разделы
+        </button>
+        <button
+          className={team.template.mode === "free" ? "active" : ""}
+          onClick={() => updateTemplateField("mode", "free")}
+        >
+          Текст
+        </button>
+      </div>
+      <label>
+        Инструкция
+        <textarea
+          value={team.template.instructions}
+          onChange={(event) => updateTemplateField("instructions", event.target.value)}
+          rows={4}
+        />
+      </label>
+      <div className="chips">
+        {team.template.sections.map((section) => (
+          <span key={section}>{section}</span>
+        ))}
+      </div>
+      <div className="add-row">
+        <input value={newSection} onChange={(event) => setNewSection(event.target.value)} placeholder="Новый раздел" />
+        <button onClick={addSection}>
+          <Plus size={16} />
+        </button>
+      </div>
+    </section>
+  );
+}
+
+function ReportReader({
+  selectedReport,
+  comment,
+  setComment,
+  reviewReport,
+  busy,
+}: {
+  selectedReport: WeeklyReport | null;
+  comment: string;
+  setComment: (value: string) => void;
+  reviewReport: (status: "approved" | "returned") => void;
+  busy: boolean;
+}) {
+  return (
+    <section className="paper-panel report-reader">
+      {selectedReport ? (
+        <>
+          <div className="panel-title">
+            <MessageSquareReply />
+            <div>
+              <p>{selectedReport.employeeName}</p>
+              <h2>Отчет за {selectedReport.week}</h2>
+            </div>
+          </div>
+          <Badge status={selectedReport.status}>{statusLabels[selectedReport.status]}</Badge>
+          <div className="report-body">
+            {Object.entries(selectedReport.sections).map(([section, content]) => (
+              <article key={section}>
+                <h3>{section}</h3>
+                <p>{content || "Раздел не заполнен"}</p>
+              </article>
+            ))}
+          </div>
+          <textarea
+            value={comment}
+            onChange={(event) => setComment(event.target.value)}
+            rows={3}
+            placeholder="Комментарий для возврата"
+          />
+          <div className="actions">
+            <button className="secondary" onClick={() => reviewReport("returned")} disabled={busy}>
+              <X size={17} />
+              Вернуть
+            </button>
+            <button onClick={() => reviewReport("approved")} disabled={busy}>
+              <Check size={17} />
+              Принять
+            </button>
+          </div>
+        </>
+      ) : (
+        <EmptyPanel title="Отчетов пока нет" text="Когда сотрудники отправят отчеты, они появятся здесь." />
+      )}
+    </section>
+  );
+}
+
+function ReportTable({ reports }: { reports: WeeklyReport[] }) {
+  return (
+    <section className="paper-panel table-panel">
+      <div className="panel-title">
+        <Table2 />
+        <div>
+          <p>Сверка</p>
+          <h2>Отчеты и статусы</h2>
+        </div>
+      </div>
+      <div className="report-table">
+        <div className="table-head">Сотрудник</div>
+        <div className="table-head">Статус</div>
+        <div className="table-head">Коротко</div>
+        {reports.map((report) => (
+          <div className="table-row" key={report.id}>
+            <strong>{report.employeeName}</strong>
+            <Badge status={report.status}>{statusLabels[report.status]}</Badge>
+            <span>{Object.values(report.sections).join(" ").slice(0, 130)}...</span>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function SummaryPanel({
+  summary,
+  reports,
+  aiBusy,
+  aiError,
+  summarizeReports,
+}: {
+  summary: Summary;
+  reports: WeeklyReport[];
+  aiBusy: boolean;
+  aiError: string;
+  summarizeReports: () => void;
+}) {
+  return (
+    <section className="paper-panel summary-panel">
+      <div className="panel-title">
+        <Sparkles />
+        <div>
+          <p>AI-сводка</p>
+          <h2>Для руководителя</h2>
+        </div>
+      </div>
+      <button className="wide-button" onClick={summarizeReports} disabled={aiBusy || reports.length === 0}>
+        <Sparkles size={18} />
+        {aiBusy ? "Собираю..." : "Суммаризировать"}
+      </button>
+      {aiError && <p className="error-line">{aiError}</p>}
+      {summary.raw ? <MarkdownContent value={summary.raw} /> : <EmptyPanel title="Сводки пока нет" text="Запусти AI-суммаризацию после отправки отчетов." />}
+    </section>
+  );
+}
+
+function MarkdownContent({ value }: { value: string }) {
+  return (
+    <div className="markdown-content">
+      <ReactMarkdown>{value}</ReactMarkdown>
     </div>
   );
 }
@@ -1262,16 +1437,27 @@ function Badge({ status, children }: { status: ReportStatus; children: React.Rea
   return <span className={`badge ${statusTone[status]}`}>{children}</span>;
 }
 
-function SummaryBlock({ title, items }: { title: string; items: string[] }) {
+function BottomNav({
+  items,
+  active,
+  onChange,
+}: {
+  items: Array<{ id: string; label: string; icon: React.ComponentType<{ size?: number }> }>;
+  active: string;
+  onChange: (value: string) => void;
+}) {
   return (
-    <div className="summary-block">
-      <h3>{title}</h3>
-      <ul>
-        {items.map((item) => (
-          <li key={item}>{item}</li>
-        ))}
-      </ul>
-    </div>
+    <nav className="bottom-nav">
+      {items.map((item) => {
+        const Icon = item.icon;
+        return (
+          <button key={item.id} className={active === item.id ? "active" : ""} onClick={() => onChange(item.id)}>
+            <Icon size={20} />
+            <span>{item.label}</span>
+          </button>
+        );
+      })}
+    </nav>
   );
 }
 
