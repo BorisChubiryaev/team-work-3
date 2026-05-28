@@ -143,6 +143,36 @@ h3 {
   padding: 5px;
 }
 
+.header-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  justify-content: flex-end;
+}
+
+.role-switch button:disabled {
+  cursor: default;
+  opacity: 1;
+  transform: none;
+}
+
+.user-pill {
+  background: rgba(255, 253, 245, 0.84);
+  border: 1px solid #d7c69f;
+  border-radius: 999px;
+  color: #5c5143;
+  font-size: 0.86rem;
+  font-weight: 800;
+  padding: 10px 13px;
+}
+
+.icon-button {
+  flex: 0 0 42px;
+  padding: 0;
+  width: 42px;
+}
+
 .role-switch button,
 .segmented button {
   background: transparent;
@@ -179,12 +209,22 @@ h3 {
   gap: 18px;
 }
 
+.centered-shell {
+  align-items: center;
+  display: grid;
+  min-height: 100vh;
+}
+
 .lead-grid {
   grid-template-columns: 0.85fr 1fr 1fr;
 }
 
 .member-grid {
   grid-template-columns: 0.8fr 1.2fr 1fr;
+}
+
+.onboarding-grid {
+  grid-template-columns: minmax(0, 1.1fr) minmax(320px, 0.9fr);
 }
 
 .paper-panel {
@@ -366,6 +406,34 @@ h3 {
   margin-bottom: 0;
 }
 
+.config-banner,
+.global-error,
+.global-success {
+  border-radius: 8px;
+  font-weight: 800;
+  line-height: 1.45;
+  margin: 0 0 16px;
+  padding: 12px 14px;
+}
+
+.config-banner {
+  background: rgba(230, 240, 244, 0.8);
+  border: 1px dashed #86aabd;
+  color: #25516f;
+}
+
+.global-error {
+  background: rgba(245, 220, 201, 0.85);
+  border: 1px solid #e0a77c;
+  color: #9a3434;
+}
+
+.global-success {
+  background: rgba(220, 235, 208, 0.9);
+  border: 1px solid #9eb98a;
+  color: #3f682d;
+}
+
 .error-line {
   color: #9a3434;
   font-weight: 700;
@@ -464,6 +532,47 @@ h3 {
   padding: 12px;
 }
 
+.team-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 18px;
+}
+
+.team-tabs button {
+  background: rgba(255, 253, 245, 0.82);
+  border: 1px solid #d7c69f;
+  color: #5c5143;
+}
+
+.team-tabs button.active {
+  background: #24313c;
+  color: #fff8e6;
+}
+
+.auth-panel {
+  justify-self: center;
+  max-width: 520px;
+  width: min(100%, 520px);
+}
+
+.auth-form {
+  display: grid;
+  gap: 14px;
+}
+
+.empty-panel {
+  align-content: center;
+  display: grid;
+  min-height: 240px;
+  text-align: center;
+}
+
+.empty-panel p {
+  color: #7b6a55;
+  margin-bottom: 0;
+}
+
 .ai-panel pre {
   background: rgba(36, 49, 60, 0.06);
   border: 1px solid rgba(36, 49, 60, 0.12);
@@ -502,7 +611,8 @@ h3 {
 
   .auth-strip,
   .lead-grid,
-  .member-grid {
+  .member-grid,
+  .onboarding-grid {
     grid-template-columns: 1fr;
   }
 
