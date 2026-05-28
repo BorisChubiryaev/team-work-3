@@ -1,5 +1,6 @@
 import type { Session, User } from "@supabase/supabase-js";
 import {
+  BarChart3,
   Bot,
   CalendarClock,
   Check,
@@ -17,6 +18,7 @@ import {
   Send,
   Sparkles,
   Table2,
+  Trash2,
   UsersRound,
   X,
 } from "lucide-react";
@@ -26,6 +28,7 @@ import {
   createTeam,
   ensureProfile,
   joinTeamByCode,
+  loadEmployeeReports,
   loadLatestSummary,
   loadReports,
   loadTeams,
@@ -35,12 +38,18 @@ import {
   submitReport,
   updateTeamJoinCode,
 } from "./lib/db";
-import { currentWeekStart, getWeekLabelFromDateInput } from "./lib/dates";
+import { currentWeekStart, getWeekLabelFromDateInput, shiftWeek, weekOptions } from "./lib/dates";
 import { hasSupabaseConfig, supabase } from "./lib/supabase";
 import type { ReportStatus, Role, Summary, Team, TeamMember, WeeklyReport } from "./types";
 
 type LeadTab = "home" | "reports" | "team" | "summary";
 type MemberTab = "report" | "team";
+
+type ProjectDraft = {
+  id: string;
+  name: string;
+  sections: Record<string, string>;
+};
 
 const emptySummary: Summary = {
   highlights: [],
@@ -75,6 +84,36 @@ function textFromReport(report: WeeklyReport) {
     .join("\n\n");
 }
 
+function createEmptyProject(sections: string[]): ProjectDraft {
+  return {
+    id: crypto.randomUUID(),
+    name: "",
+    sections: Object.fromEntries(sections.map((section) => [section, ""])),
+  };
+}
+
+function buildProjectSections(
+  projects: ProjectDraft[],
+  templateSections: string[],
+  fallbackSections: Record<string, string>
+) {
+  const filledProjects = projects.filter((project) =>
+    project.name.trim() || Object.values(project.sections).some((value) => value.trim())
+  );
+
+  if (filledProjects.length === 0) return fallbackSections;
+
+  return Object.fromEntries(
+    filledProjects.map((project, index) => {
+      const projectName = project.name.trim() || `Проект ${index + 1}`;
+      const body = templateSections
+        .map((section) => `### ${section}\n${project.sections[section]?.trim() || "Не заполнено"}`)
+        .join("\n\n");
+      return [projectName, body];
+    })
+  );
+}
+
 async function callAi(action: "assist" | "summarize", payload: unknown) {
   const response = await fetch("/api/ai", {
     method: "POST",
@@ -95,6 +134,7 @@ function App() {
   const [selectedTeamId, setSelectedTeamId] = useState("");
   const [selectedWeekStart, setSelectedWeekStart] = useState(currentWeekStart);
   const [reports, setReports] = useState<WeeklyReport[]>([]);
+  const [employeeReports, setEmployeeReports] = useState<WeeklyReport[]>([]);
   const [summary, setSummary] = useState<Summary>(emptySummary);
   const [leadTab, setLeadTab] = useState<LeadTab>("home");
   const [memberTab, setMemberTab] = useState<MemberTab>("report");
@@ -102,6 +142,8 @@ function App() {
   const [joinCode, setJoinCode] = useState("");
   const [newSection, setNewSection] = useState("");
   const [draftSections, setDraftSections] = useState<Record<string, string>>({});
+  const [projectDrafts, setProjectDrafts] = useState<ProjectDraft[]>([]);
+  const [submitNotice, setSubmitNotice] = useState("");
   const [selectedReportId, setSelectedReportId] = useState("");
   const [aiDraft, setAiDraft] = useState("");
   const [aiBusy, setAiBusy] = useState(false);
@@ -150,6 +192,7 @@ function App() {
       setProfile(null);
       setTeams([]);
       setReports([]);
+      setEmployeeReports([]);
       return;
     }
 
@@ -170,9 +213,11 @@ function App() {
     });
 
     void reloadWeekData(team.id, selectedWeekStart);
+    if (activeUser) void reloadEmployeeHistory(team.id, activeUser.id);
+    setSubmitNotice("");
     // Week data is keyed by selected team and selected week.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [team?.id, selectedWeekStart]);
+  }, [team?.id, selectedWeekStart, activeUser?.id]);
 
   useEffect(() => {
     if (!team || !activeUser) return;
@@ -192,6 +237,11 @@ function App() {
     // Draft hydration is tied to the selected user/team/report set.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeUser?.id, reports, team]);
+
+  useEffect(() => {
+    if (!team || projectDrafts.length > 0) return;
+    setProjectDrafts([createEmptyProject(team.template.sections)]);
+  }, [projectDrafts.length, team]);
 
   async function bootstrap(user: User) {
     setBusy(true);
@@ -241,6 +291,15 @@ function App() {
     }
   }
 
+  async function reloadEmployeeHistory(teamId: string, employeeId: string) {
+    try {
+      const history = await loadEmployeeReports(teamId, employeeId);
+      setEmployeeReports(history);
+    } catch {
+      setEmployeeReports([]);
+    }
+  }
+
   function updateLocalTeam(nextTeam: Team) {
     setTeams((prev) => prev.map((item) => (item.id === nextTeam.id ? nextTeam : item)));
   }
@@ -252,7 +311,6 @@ function App() {
     setAppError("");
     try {
       await saveTeam(snapshot);
-      setAuthMessage("Команда сохранена");
     } catch (error) {
       setAppError(error instanceof Error ? error.message : "Не удалось сохранить команду");
     } finally {
@@ -310,7 +368,76 @@ function App() {
       template: { ...team.template, sections: [...team.template.sections, clean] },
     });
     setDraftSections((prev) => ({ ...prev, [clean]: "" }));
+    setProjectDrafts((prev) =>
+      prev.map((project) => ({ ...project, sections: { ...project.sections, [clean]: "" } }))
+    );
     setNewSection("");
+  }
+
+  function renameSection(index: number, value: string) {
+    if (!team) return;
+    const previousName = team.template.sections[index];
+    const nextName = value.trim();
+    if (!previousName || !nextName) return;
+    updateLocalTeam({
+      ...team,
+      template: {
+        ...team.template,
+        sections: team.template.sections.map((section, sectionIndex) =>
+          sectionIndex === index ? nextName : section
+        ),
+      },
+    });
+    setProjectDrafts((prev) =>
+      prev.map((project) => {
+        const { [previousName]: previousValue, ...rest } = project.sections;
+        return { ...project, sections: { ...rest, [nextName]: previousValue ?? "" } };
+      })
+    );
+  }
+
+  function removeSection(index: number) {
+    if (!team || team.template.sections.length <= 1) return;
+    const sectionName = team.template.sections[index];
+    updateLocalTeam({
+      ...team,
+      template: {
+        ...team.template,
+        sections: team.template.sections.filter((_, sectionIndex) => sectionIndex !== index),
+      },
+    });
+    setProjectDrafts((prev) =>
+      prev.map((project) => {
+        const nextSections = { ...project.sections };
+        delete nextSections[sectionName];
+        return { ...project, sections: nextSections };
+      })
+    );
+  }
+
+  function addProjectDraft() {
+    if (!team) return;
+    setProjectDrafts((prev) => [...prev, createEmptyProject(team.template.sections)]);
+  }
+
+  function removeProjectDraft(projectId: string) {
+    setProjectDrafts((prev) => (prev.length > 1 ? prev.filter((project) => project.id !== projectId) : prev));
+  }
+
+  function updateProjectDraft(projectId: string, patch: Partial<ProjectDraft>) {
+    setProjectDrafts((prev) =>
+      prev.map((project) => (project.id === projectId ? { ...project, ...patch } : project))
+    );
+  }
+
+  function updateProjectSection(projectId: string, section: string, value: string) {
+    setProjectDrafts((prev) =>
+      prev.map((project) =>
+        project.id === projectId
+          ? { ...project, sections: { ...project.sections, [section]: value } }
+          : project
+      )
+    );
   }
 
   async function regenerateCode() {
@@ -334,15 +461,18 @@ function App() {
 
   async function submitDraft() {
     if (!team || !activeUser) return;
+    const sectionsToSubmit = buildProjectSections(projectDrafts, team.template.sections, draftSections);
     const optimisticReport: WeeklyReport = {
       id: employeeReport?.id ?? "optimistic-report",
       employeeId: activeUser.id,
       employeeName: activeUser.name,
       week: selectedWeekLabel,
+      weekStart: selectedWeekStart,
       status: "submitted",
       submittedAt: "только что",
-      sections: draftSections,
+      sections: sectionsToSubmit,
     };
+    setSubmitNotice("Отчет отправлен руководителю");
     setReports((prev) => {
       const withoutOwn = prev.filter((report) => report.employeeId !== activeUser.id);
       return [optimisticReport, ...withoutOwn];
@@ -352,12 +482,13 @@ function App() {
     try {
       await submitReport({
         teamId: team.id,
-        employeeId: activeUser.id,
-        weekStart: selectedWeekStart,
-        weekLabel: selectedWeekLabel,
-        sections: draftSections,
-      });
+          employeeId: activeUser.id,
+          weekStart: selectedWeekStart,
+          weekLabel: selectedWeekLabel,
+          sections: sectionsToSubmit,
+        });
       await reloadWeekData(team.id, selectedWeekStart);
+      await reloadEmployeeHistory(team.id, activeUser.id);
     } catch (error) {
       setAppError(error instanceof Error ? error.message : "Не удалось отправить отчет");
     } finally {
@@ -390,7 +521,7 @@ function App() {
     setAiBusy(true);
     setAiError("");
     try {
-      const result = await callAi("assist", { template: team?.template, report: draftSections });
+      const result = await callAi("assist", { template: team?.template, projects: projectDrafts });
       setAiDraft(result.text);
     } catch {
       setAiError("AI API пока не настроен или временно недоступен.");
@@ -502,6 +633,8 @@ function App() {
           persistTeam={persistTeam}
           regenerateCode={regenerateCode}
           selectedWeekLabel={selectedWeekLabel}
+          renameSection={renameSection}
+          removeSection={removeSection}
         />
       ) : (
         <MemberWorkspace
@@ -511,6 +644,11 @@ function App() {
           setJoinCode={setJoinCode}
           onJoin={() => handleJoinTeam()}
           draftSections={draftSections}
+          projectDrafts={projectDrafts}
+          addProjectDraft={addProjectDraft}
+          removeProjectDraft={removeProjectDraft}
+          updateProjectDraft={updateProjectDraft}
+          updateProjectSection={updateProjectSection}
           updateDraft={updateDraft}
           submitDraft={submitDraft}
           improveReport={improveReport}
@@ -519,7 +657,9 @@ function App() {
           aiError={aiError}
           busy={busy}
           employeeReport={employeeReport}
+          employeeReports={employeeReports}
           selectedWeekLabel={selectedWeekLabel}
+          submitNotice={submitNotice}
         />
       )}
 
@@ -633,14 +773,24 @@ function WorkspaceToolbar({
           ))}
         </select>
       )}
-      <label>
-        Неделя
-        <input
-          type="date"
-          value={selectedWeekStart}
-          onChange={(event) => setSelectedWeekStart(event.target.value)}
-        />
-      </label>
+      <div className="week-picker">
+        <button className="secondary" onClick={() => setSelectedWeekStart(shiftWeek(selectedWeekStart, -1))}>
+          Назад
+        </button>
+        <label>
+          Неделя
+          <select value={selectedWeekStart} onChange={(event) => setSelectedWeekStart(event.target.value)}>
+            {weekOptions(16).map((week) => (
+              <option key={week.value} value={week.value}>
+                {week.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <button className="secondary" onClick={() => setSelectedWeekStart(shiftWeek(selectedWeekStart, 1))}>
+          Вперед
+        </button>
+      </div>
     </section>
   );
 }
@@ -891,6 +1041,8 @@ type LeadProps = {
   persistTeam: () => void;
   regenerateCode: () => void;
   selectedWeekLabel: string;
+  renameSection: (index: number, value: string) => void;
+  removeSection: (index: number) => void;
 };
 
 function LeadWorkspace(props: LeadProps) {
@@ -920,6 +1072,8 @@ function LeadWorkspace(props: LeadProps) {
     persistTeam,
     regenerateCode,
     selectedWeekLabel,
+    renameSection,
+    removeSection,
   } = props;
 
   if (tab === "home") {
@@ -943,6 +1097,7 @@ function LeadWorkspace(props: LeadProps) {
           </div>
           <p className="note">Отправлено отчетов: {reports.length}. На проверке: {reports.filter((r) => r.status === "submitted").length}.</p>
         </section>
+        <AnalyticsCards reports={reports} employees={employees} missingEmployees={missingEmployees} />
       </div>
     );
   }
@@ -986,6 +1141,8 @@ function LeadWorkspace(props: LeadProps) {
           addSection={addSection}
           newSection={newSection}
           setNewSection={setNewSection}
+          renameSection={renameSection}
+          removeSection={removeSection}
         />
       </div>
     );
@@ -1011,6 +1168,11 @@ type MemberProps = {
   setJoinCode: (value: string) => void;
   onJoin: () => void;
   draftSections: Record<string, string>;
+  projectDrafts: ProjectDraft[];
+  addProjectDraft: () => void;
+  removeProjectDraft: (projectId: string) => void;
+  updateProjectDraft: (projectId: string, patch: Partial<ProjectDraft>) => void;
+  updateProjectSection: (projectId: string, section: string, value: string) => void;
   updateDraft: (section: string, value: string) => void;
   submitDraft: () => void;
   improveReport: () => void;
@@ -1019,7 +1181,9 @@ type MemberProps = {
   aiError: string;
   busy: boolean;
   employeeReport: WeeklyReport | null;
+  employeeReports: WeeklyReport[];
   selectedWeekLabel: string;
+  submitNotice: string;
 };
 
 function MemberWorkspace(props: MemberProps) {
@@ -1030,6 +1194,11 @@ function MemberWorkspace(props: MemberProps) {
     setJoinCode,
     onJoin,
     draftSections,
+    projectDrafts,
+    addProjectDraft,
+    removeProjectDraft,
+    updateProjectDraft,
+    updateProjectSection,
     updateDraft,
     submitDraft,
     improveReport,
@@ -1038,7 +1207,9 @@ function MemberWorkspace(props: MemberProps) {
     aiError,
     busy,
     employeeReport,
+    employeeReports,
     selectedWeekLabel,
+    submitNotice,
   } = props;
 
   if (tab === "team") {
@@ -1093,17 +1264,48 @@ function MemberWorkspace(props: MemberProps) {
             <span>{employeeReport.returnedComment}</span>
           </div>
         )}
-        {team.template.sections.map((section) => (
-          <label key={section}>
-            {section}
-            <textarea
-              value={draftSections[section] ?? ""}
-              onChange={(event) => updateDraft(section, event.target.value)}
-              rows={section === "Сделано" ? 8 : 4}
-            />
-          </label>
-        ))}
+        {submitNotice && <p className="global-success">{submitNotice}</p>}
+        <div className="project-draft-list">
+          {projectDrafts.map((project, index) => (
+            <article className="project-draft-card" key={project.id}>
+              <div className="project-card-head">
+                <label>
+                  Проект
+                  <input
+                    value={project.name}
+                    onChange={(event) => updateProjectDraft(project.id, { name: event.target.value })}
+                    placeholder={`Проект ${index + 1}`}
+                  />
+                </label>
+                <button
+                  className="secondary icon-button"
+                  onClick={() => removeProjectDraft(project.id)}
+                  aria-label="Удалить проект"
+                >
+                  <Trash2 size={16} />
+                </button>
+              </div>
+              {team.template.sections.map((section) => (
+                <label key={section}>
+                  {section}
+                  <textarea
+                    value={project.sections[section] ?? draftSections[section] ?? ""}
+                    onChange={(event) => {
+                      updateProjectSection(project.id, section, event.target.value);
+                      updateDraft(section, event.target.value);
+                    }}
+                    rows={section === "Сделано" ? 5 : 3}
+                  />
+                </label>
+              ))}
+            </article>
+          ))}
+        </div>
         <div className="actions">
+          <button className="secondary" onClick={addProjectDraft}>
+            <Plus size={17} />
+            Проект
+          </button>
           <button className="secondary" onClick={improveReport} disabled={aiBusy}>
             <Bot size={17} />
             {aiBusy ? "Думаю..." : "Помочь"}
@@ -1131,6 +1333,8 @@ function MemberWorkspace(props: MemberProps) {
           }
         />
       </section>
+
+      <EmployeeReportHistory reports={employeeReports} />
     </div>
   );
 }
@@ -1177,6 +1381,55 @@ function StatusPanel({
         <p className="note">Не отправили: {missingEmployees.map((member) => member.name).join(", ")}</p>
       )}
     </section>
+  );
+}
+
+function AnalyticsCards({
+  reports,
+  employees,
+  missingEmployees,
+}: {
+  reports: WeeklyReport[];
+  employees: Team["members"];
+  missingEmployees: Team["members"];
+}) {
+  const approved = reports.filter((report) => report.status === "approved").length;
+  const returned = reports.filter((report) => report.status === "returned").length;
+  const blockers = reports.reduce(
+    (count, report) =>
+      count +
+      Object.entries(report.sections).filter(([key, value]) =>
+        `${key} ${value}`.toLowerCase().includes("блок")
+      ).length,
+    0
+  );
+  const averageLength =
+    reports.length === 0
+      ? 0
+      : Math.round(
+          reports.reduce((sum, report) => sum + Object.values(report.sections).join(" ").length, 0) /
+            reports.length
+        );
+
+  return (
+    <section className="analytics-grid">
+      <MetricCard label="Сотрудников" value={employees.length} />
+      <MetricCard label="Не сдали" value={missingEmployees.length} tone="warn" />
+      <MetricCard label="Принято" value={approved} tone="good" />
+      <MetricCard label="Возвраты" value={returned} tone="warn" />
+      <MetricCard label="Блокеры" value={blockers} />
+      <MetricCard label="Средний объем" value={`${averageLength} зн.`} />
+    </section>
+  );
+}
+
+function MetricCard({ label, value, tone = "ink" }: { label: string; value: string | number; tone?: string }) {
+  return (
+    <article className={`metric-card ${tone}`}>
+      <BarChart3 size={18} />
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </article>
   );
 }
 
@@ -1248,12 +1501,16 @@ function TemplateSettings({
   addSection,
   newSection,
   setNewSection,
+  renameSection,
+  removeSection,
 }: {
   team: Team;
   updateTemplateField: (field: "instructions" | "mode", value: string) => void;
   addSection: () => void;
   newSection: string;
   setNewSection: (value: string) => void;
+  renameSection: (index: number, value: string) => void;
+  removeSection: (index: number) => void;
 }) {
   return (
     <section className="paper-panel">
@@ -1286,9 +1543,14 @@ function TemplateSettings({
           rows={4}
         />
       </label>
-      <div className="chips">
-        {team.template.sections.map((section) => (
-          <span key={section}>{section}</span>
+      <div className="section-editor-list">
+        {team.template.sections.map((section, index) => (
+          <div className="section-editor-row" key={`${section}-${index}`}>
+            <input defaultValue={section} onBlur={(event) => renameSection(index, event.target.value)} />
+            <button className="secondary icon-button" onClick={() => removeSection(index)} aria-label="Удалить раздел">
+              <Trash2 size={16} />
+            </button>
+          </div>
         ))}
       </div>
       <div className="add-row">
@@ -1412,6 +1674,50 @@ function SummaryPanel({
       </button>
       {aiError && <p className="error-line">{aiError}</p>}
       {summary.raw ? <MarkdownContent value={summary.raw} /> : <EmptyPanel title="Сводки пока нет" text="Запусти AI-суммаризацию после отправки отчетов." />}
+      <SummaryReportTable reports={reports} />
+    </section>
+  );
+}
+
+function SummaryReportTable({ reports }: { reports: WeeklyReport[] }) {
+  return (
+    <div className="summary-table">
+      <div className="table-head">Сотрудник</div>
+      <div className="table-head">Статус</div>
+      <div className="table-head">Проекты / итоги</div>
+      {reports.map((report) => (
+        <div className="table-row" key={report.id}>
+          <strong>{report.employeeName}</strong>
+          <Badge status={report.status}>{statusLabels[report.status]}</Badge>
+          <span>{Object.entries(report.sections).map(([key]) => key).join(", ") || "Без проектов"}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function EmployeeReportHistory({ reports }: { reports: WeeklyReport[] }) {
+  return (
+    <section className="paper-panel history-panel">
+      <div className="panel-title">
+        <Table2 />
+        <div>
+          <p>История</p>
+          <h2>Мои отчеты</h2>
+        </div>
+      </div>
+      <div className="history-list">
+        {reports.length === 0 && <p className="note">Отправленных отчетов пока нет.</p>}
+        {reports.map((report) => (
+          <article key={report.id}>
+            <div>
+              <strong>{report.week}</strong>
+              <span>{report.submittedAt ?? "без даты отправки"}</span>
+            </div>
+            <Badge status={report.status}>{statusLabels[report.status]}</Badge>
+          </article>
+        ))}
+      </div>
     </section>
   );
 }

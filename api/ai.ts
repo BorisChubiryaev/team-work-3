@@ -42,7 +42,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       "X-Title": "Team Weekly Reports",
     },
     body: JSON.stringify({
-      model: process.env.OPENROUTER_MODEL ?? "openrouter/free",
+      model: process.env.OPENROUTER_MODEL ?? "google/gemini-2.0-flash-001",
       messages: [
         { role: "system", content: systemPrompt },
         { role: "user", content: JSON.stringify(payload, null, 2) },

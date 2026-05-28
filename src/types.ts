@@ -31,6 +31,7 @@ export type WeeklyReport = {
   employeeId: string;
   employeeName: string;
   week: string;
+  weekStart?: string;
   status: ReportStatus;
   submittedAt?: string;
   returnedComment?: string;

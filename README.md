@@ -52,7 +52,7 @@ cp .env.example .env.local
 - `VITE_SUPABASE_URL`
 - `VITE_SUPABASE_ANON_KEY`
 - `OPENROUTER_API_KEY`
-- `OPENROUTER_MODEL`, по умолчанию `openrouter/free`
+- `OPENROUTER_MODEL`, по умолчанию `google/gemini-2.0-flash-001`
 - `OPENROUTER_SITE_URL`, URL приложения
 
 Google Client Secret хранится в Supabase Auth provider settings, не в клиентском коде.

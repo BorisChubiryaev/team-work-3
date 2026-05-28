@@ -236,6 +236,16 @@ h3 {
   min-width: 180px;
 }
 
+.week-picker {
+  align-items: end;
+  display: flex;
+  gap: 8px;
+}
+
+.week-picker label {
+  min-width: 220px;
+}
+
 .workspace {
   display: grid;
   gap: 18px;
@@ -276,6 +286,47 @@ h3 {
 .summary-only-grid {
   grid-template-columns: minmax(0, 920px);
   justify-content: center;
+}
+
+.analytics-grid {
+  display: grid;
+  gap: 12px;
+  grid-column: 1 / -1;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.metric-card {
+  align-content: start;
+  background: rgba(255, 253, 245, 0.88);
+  border: 1px solid #d7c69f;
+  border-radius: 8px;
+  display: grid;
+  gap: 8px;
+  min-height: 112px;
+  padding: 14px;
+}
+
+.metric-card svg {
+  color: #25516f;
+}
+
+.metric-card span {
+  color: #7b6a55;
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+
+.metric-card strong {
+  color: #17232c;
+  font-size: 1.7rem;
+}
+
+.metric-card.good strong {
+  color: #3f682d;
+}
+
+.metric-card.warn strong {
+  color: #9a4b20;
 }
 
 .paper-panel {
@@ -400,6 +451,30 @@ h3 {
 .chips span {
   background: #f0e2bf;
   color: #5b4932;
+}
+
+.section-editor-list,
+.project-draft-list,
+.history-list {
+  display: grid;
+  gap: 10px;
+}
+
+.section-editor-row,
+.project-card-head {
+  align-items: end;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.project-draft-card {
+  background: rgba(255, 253, 245, 0.72);
+  border: 1px solid rgba(215, 198, 159, 0.9);
+  border-radius: 8px;
+  display: grid;
+  gap: 13px;
+  padding: 14px;
 }
 
 .badge.ink {
@@ -558,6 +633,12 @@ h3 {
   overflow-x: auto;
 }
 
+.summary-table {
+  display: grid;
+  grid-template-columns: 180px 130px minmax(260px, 1fr);
+  overflow-x: auto;
+}
+
 .table-head {
   background: #24313c;
   color: #fff8e6;
@@ -574,6 +655,31 @@ h3 {
   border-bottom: 1px solid #d7c69f;
   min-width: 0;
   padding: 12px 11px;
+}
+
+.history-panel {
+  align-content: start;
+}
+
+.history-list article {
+  align-items: center;
+  background: rgba(255, 253, 245, 0.74);
+  border: 1px solid #d7c69f;
+  border-radius: 8px;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  padding: 12px;
+}
+
+.history-list article div {
+  display: grid;
+  gap: 4px;
+}
+
+.history-list span {
+  color: #7b6a55;
+  font-size: 0.85rem;
 }
 
 .teacher-note {
@@ -696,7 +802,8 @@ h3 {
   .reports-grid,
   .team-settings-grid,
   .member-team-grid,
-  .member-report-grid {
+  .member-report-grid,
+  .analytics-grid {
     grid-template-columns: 1fr 1fr;
   }
 
@@ -762,5 +869,20 @@ h3 {
   .bottom-nav button {
     min-height: 54px;
     padding: 6px 8px;
+  }
+
+  .week-picker,
+  .section-editor-row,
+  .project-card-head {
+    grid-template-columns: 1fr;
+  }
+
+  .week-picker {
+    align-items: stretch;
+    display: grid;
+  }
+
+  .analytics-grid {
+    grid-template-columns: 1fr;
   }
 }

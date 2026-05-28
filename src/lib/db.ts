@@ -29,6 +29,7 @@ type TeamMemberRow = {
 type ReportRow = {
   id: string;
   employee_id: string;
+  week_start: string;
   week_label: string;
   status: ReportStatus;
   submitted_at: string | null;
@@ -74,6 +75,7 @@ function mapReport(row: ReportRow): WeeklyReport {
     employeeId: row.employee_id,
     employeeName: displayName(profile),
     week: row.week_label,
+    weekStart: row.week_start,
     status: row.status,
     submittedAt: row.submitted_at
       ? new Intl.DateTimeFormat("ru-RU", {
@@ -244,10 +246,24 @@ export async function loadReports(teamId: string, weekStart = currentWeekStart) 
   if (!supabase) throw new Error("Supabase is not configured");
   const { data, error } = await supabase
     .from("reports")
-    .select("id,employee_id,week_label,status,submitted_at,returned_comment,sections,profiles(id,email,full_name)")
+    .select("id,employee_id,week_start,week_label,status,submitted_at,returned_comment,sections,profiles(id,email,full_name)")
     .eq("team_id", teamId)
     .eq("week_start", weekStart)
     .order("submitted_at", { ascending: false, nullsFirst: false });
+
+  if (error) throw error;
+  return ((data ?? []) as ReportRow[]).map(mapReport);
+}
+
+export async function loadEmployeeReports(teamId: string, employeeId: string) {
+  if (!supabase) throw new Error("Supabase is not configured");
+  const { data, error } = await supabase
+    .from("reports")
+    .select("id,employee_id,week_start,week_label,status,submitted_at,returned_comment,sections,profiles(id,email,full_name)")
+    .eq("team_id", teamId)
+    .eq("employee_id", employeeId)
+    .order("week_start", { ascending: false })
+    .limit(16);
 
   if (error) throw error;
   return ((data ?? []) as ReportRow[]).map(mapReport);
